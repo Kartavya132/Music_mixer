@@ -1,5 +1,4 @@
 import func.function as fnf
-from sys import exit
 
 
 def main():
@@ -8,12 +7,8 @@ def main():
     print("|  Welcome to music player |")
     print("=" * (40 - 12), "\n")
 
-    choice = input("Enter for playing the music ")
-
-    if choice:
-        fnf.admin()
-    else:
-        print("Playing music")
+    input("Press Enter to start playing music from the music folder... ")
+    fnf.music_player()
 
 
 if __name__ == "__main__":
