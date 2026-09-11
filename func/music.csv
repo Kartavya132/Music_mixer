@@ -1,1 +1,4 @@
-index,music,size,created_date,language
+index,music,intro,size,created_date,language,location
+1,track_1.mp3,Enjoy track 1 from your music collection.,11.72 MB,2026-09-10,unknown,C:\Programing\Python\Python_project\Music_mixer\music\track_1.mp3
+2,track_2.mp3,Enjoy track 2 from your music collection.,11.62 MB,2026-09-10,unknown,C:\Programing\Python\Python_project\Music_mixer\music\track_2.mp3
+3,track_3.mp3,Enjoy track 3 from your music collection.,12.73 MB,2026-09-10,unknown,C:\Programing\Python\Python_project\Music_mixer\music\track_3.mp3
