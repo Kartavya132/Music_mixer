@@ -290,7 +290,41 @@ def admin(music_dir=None, csv_path=None):
     return sync_music_csv(music_dir=music_dir, csv_path=csv_path)
 
 
-def _play_music_file_with_vlc(music_file):
+def _get_music_playlist(music_dir):
+    playlist = []
+    for pattern in ("*.mp3", "*.wav"):
+        playlist.extend(
+            music_file for music_file in music_dir.glob(pattern) if music_file.is_file()
+        )
+
+    unique_playlist = {path.resolve(): path for path in playlist}
+    return sorted(unique_playlist.values(), key=lambda item: item.name.lower())
+
+
+def _wait_for_media_player_to_finish(media_player, vlc_module=None):
+    if vlc_module is not None and hasattr(media_player, "get_state"):
+        state_enum = getattr(vlc_module, "State", None)
+        if state_enum is not None:
+            while True:
+                try:
+                    state = media_player.get_state()
+                except Exception:
+                    break
+
+                if state in (
+                    getattr(state_enum, "Ended", None),
+                    getattr(state_enum, "Stopped", None),
+                    getattr(state_enum, "Error", None),
+                ):
+                    return
+
+                time.sleep(0.05)
+
+    while media_player.is_playing():
+        time.sleep(0.05)
+
+
+def _play_music_file_with_vlc(music_file, volume=100):
     try:
         import vlc
     except ImportError as exc:
@@ -300,14 +334,24 @@ def _play_music_file_with_vlc(music_file):
 
     instance = vlc.Instance()
     media_player = instance.media_player_new()
-    media_player.set_mrl(str(music_file))
+
+    if hasattr(instance, "media_new") and hasattr(media_player, "set_media"):
+        media = instance.media_new(str(music_file))
+        media_player.set_media(media)
+    else:
+        media_player.set_mrl(str(music_file))
+
+    if hasattr(media_player, "audio_set_volume"):
+        media_player.audio_set_volume(volume)
+
     media_player.play()
 
-    while media_player.is_playing():
-        time.sleep(0.05)
+    _wait_for_media_player_to_finish(media_player, vlc_module=vlc)
 
 
-def music_player(music_dir=None, max_passes=None, csv_path=None):
+def play_randomized_music_from_folder(
+    music_dir=None, max_passes=None, csv_path=None, volume=100
+):
     if music_dir is None:
         music_dir = (Path(__file__).resolve().parent.parent / "music").resolve()
     else:
@@ -331,10 +375,7 @@ def music_player(music_dir=None, max_passes=None, csv_path=None):
 
     try:
         while True:
-            playlist = []
-            for pattern in ("*.mp3", "*.wav"):
-                playlist.extend(music_dir.glob(pattern))
-            playlist = sorted({path.resolve(): path for path in playlist}.values())
+            playlist = _get_music_playlist(music_dir)
 
             if not playlist:
                 raise FileNotFoundError(
@@ -345,7 +386,7 @@ def music_player(music_dir=None, max_passes=None, csv_path=None):
 
             for index, music_file in enumerate(playlist, start=1):
                 print(f"\n[{index}/{len(playlist)}] Now playing: {music_file.name}")
-                _play_music_file_with_vlc(music_file)
+                _play_music_file_with_vlc(music_file, volume=volume)
 
             passes_played += 1
             print("\nPlaylist finished. Shuffling and replaying...")
@@ -354,6 +395,15 @@ def music_player(music_dir=None, max_passes=None, csv_path=None):
                 break
     except KeyboardInterrupt:
         print("\nMusic player stopped by user.")
+
+
+def music_player(music_dir=None, max_passes=None, csv_path=None, volume=100):
+    play_randomized_music_from_folder(
+        music_dir=music_dir,
+        max_passes=max_passes,
+        csv_path=csv_path,
+        volume=volume,
+    )
 
 
 if __name__ == "__main__":

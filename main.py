@@ -17,7 +17,7 @@ def main():
         print("\nMain Menu")
         print("1. Play music")
         print("2. Open admin panel")
-        print("3. View music library")KO
+        print("3. View music library")
         print("4. Exit")
 
         choice = input("\nChoose an option: ").strip()

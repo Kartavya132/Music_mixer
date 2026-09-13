@@ -3,7 +3,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from func.function import add_music_to_library, admin, music_player
+from func.function import (
+    add_music_to_library,
+    admin,
+    music_player,
+    play_randomized_music_from_folder,
+)
 
 
 def test_add_music_to_library_updates_csv(tmp_path):
@@ -66,10 +71,14 @@ def test_music_player_with_sample_mp3_files(tmp_path, monkeypatch):
         def __init__(self):
             self.paths = []
             self._playing = True
+            self.volume = None
 
         def set_mrl(self, file_path):
             self.paths.append(file_path)
             self._playing = True
+
+        def audio_set_volume(self, volume):
+            self.volume = volume
 
         def play(self):
             self._playing = True
@@ -90,10 +99,11 @@ def test_music_player_with_sample_mp3_files(tmp_path, monkeypatch):
         ),
     )
 
-    music_player(sample_dir, max_passes=1, csv_path=csv_path)
+    music_player(sample_dir, max_passes=1, csv_path=csv_path, volume=100)
 
     assert len(fake_player.paths) == len(sample_files)
     assert all(path.endswith(".wav") for path in fake_player.paths)
+    assert fake_player.volume == 100
 
     with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))
@@ -103,6 +113,61 @@ def test_music_player_with_sample_mp3_files(tmp_path, monkeypatch):
     assert "Enjoy track 1" in rows[0]["intro"]
     assert "size" in rows[0]
     assert "location" in rows[0]
+
+
+def test_play_randomized_music_from_folder_uses_randomized_playlist(
+    tmp_path, monkeypatch
+):
+    sample_dir = tmp_path / "music"
+    sample_dir.mkdir()
+
+    sample_files = [
+        sample_dir / "track1.mp3",
+        sample_dir / "track2.mp3",
+        sample_dir / "track3.mp3",
+    ]
+
+    for sample in sample_files:
+        sample.write_text("sample mp3 content", encoding="utf-8")
+
+    csv_path = tmp_path / "music.csv"
+
+    class FakeMediaPlayer:
+        def __init__(self):
+            self.paths = []
+            self._playing = True
+            self.volume = None
+
+        def set_mrl(self, file_path):
+            self.paths.append(file_path)
+            self._playing = True
+
+        def audio_set_volume(self, volume):
+            self.volume = volume
+
+        def play(self):
+            self._playing = True
+
+        def is_playing(self):
+            if self._playing:
+                self._playing = False
+                return True
+            return False
+
+    fake_player = FakeMediaPlayer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vlc",
+        SimpleNamespace(
+            Instance=lambda: SimpleNamespace(media_player_new=lambda: fake_player)
+        ),
+    )
+
+    play_randomized_music_from_folder(sample_dir, max_passes=1, csv_path=csv_path)
+
+    assert len(fake_player.paths) == len(sample_files)
+    assert all(path.endswith(".wav") for path in fake_player.paths)
 
 
 def test_admin_can_add_and_delete_song(tmp_path, monkeypatch):
