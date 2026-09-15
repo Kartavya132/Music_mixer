@@ -8,7 +8,26 @@ from func.function import (
     admin,
     music_player,
     play_randomized_music_from_folder,
+    sync_music_csv,
 )
+
+
+def test_sync_music_csv_keeps_real_music_names(tmp_path):
+    sample_dir = tmp_path / "music"
+    sample_dir.mkdir()
+    sample_file_1 = sample_dir / "sunset_dreams.mp3"
+    sample_file_2 = sample_dir / "night_drive.mp3"
+    sample_file_1.write_text("sample mp3 content", encoding="utf-8")
+    sample_file_2.write_text("sample mp3 content", encoding="utf-8")
+
+    csv_path = tmp_path / "music.csv"
+    rows = sync_music_csv(music_dir=sample_dir, csv_path=csv_path)
+
+    assert [row["music"] for row in rows] == [
+        "night_drive.mp3",
+        "sunset_dreams.mp3",
+    ]
+    assert all(not row["music"].startswith("track_") for row in rows)
 
 
 def test_add_music_to_library_updates_csv(tmp_path):
@@ -21,11 +40,10 @@ def test_add_music_to_library_updates_csv(tmp_path):
 
     rows = add_music_to_library(source_file, music_dir=sample_dir, csv_path=csv_path)
 
-    assert (sample_dir / "track_1.wav").exists()
-    assert not (sample_dir / "source_track.mp3").exists()
+    assert (sample_dir / "source_track.mp3").exists()
     assert len(rows) == 1
-    assert rows[0]["music"] == "track_1.wav"
-    assert rows[0]["location"] == str((sample_dir / "track_1.wav").resolve())
+    assert rows[0]["music"] == "source_track.mp3"
+    assert rows[0]["location"] == str((sample_dir / "source_track.mp3").resolve())
 
 
 def test_sync_music_csv_replaces_placeholder_files(tmp_path):
@@ -46,10 +64,9 @@ def test_sync_music_csv_replaces_placeholder_files(tmp_path):
     )
 
     assert len(rows) == 2
-    assert (sample_dir / "track_1.wav").exists()
-    assert (sample_dir / "track_2.wav").exists()
-    assert not (sample_dir / "sample_track_1.mp3").exists()
-    assert not (sample_dir / "sample_track_2.mp3").exists()
+    assert (sample_dir / "sample_track_1.mp3").exists()
+    assert (sample_dir / "sample_track_2.mp3").exists()
+    assert all(not row["music"].startswith("track_") for row in rows)
 
 
 def test_music_player_with_sample_mp3_files(tmp_path, monkeypatch):
@@ -102,17 +119,115 @@ def test_music_player_with_sample_mp3_files(tmp_path, monkeypatch):
     music_player(sample_dir, max_passes=1, csv_path=csv_path, volume=100)
 
     assert len(fake_player.paths) == len(sample_files)
-    assert all(path.endswith(".wav") for path in fake_player.paths)
+    assert all(path.endswith((".mp3", ".wav")) for path in fake_player.paths)
     assert fake_player.volume == 100
 
     with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))
 
     assert rows
-    assert rows[0]["music"] == "track_1.wav"
-    assert "Enjoy track 1" in rows[0]["intro"]
+    assert rows[0]["music"] in {"track1.mp3", "track1.wav"}
+    assert "Enjoy" in rows[0]["intro"]
     assert "size" in rows[0]
     assert "location" in rows[0]
+
+
+def test_music_player_ramps_volume_up_while_playing(tmp_path, monkeypatch):
+    sample_dir = tmp_path / "music"
+    sample_dir.mkdir()
+
+    sample_files = [
+        sample_dir / "track1.mp3",
+        sample_dir / "track2.mp3",
+    ]
+
+    for sample in sample_files:
+        sample.write_text("sample mp3 content", encoding="utf-8")
+
+    csv_path = tmp_path / "music.csv"
+
+    class FakeMediaPlayer:
+        def __init__(self):
+            self.calls = []
+            self._playing = True
+            self.volume = None
+
+        def set_mrl(self, file_path):
+            self.volume = None
+
+        def audio_set_volume(self, volume):
+            self.calls.append(volume)
+            self.volume = volume
+
+        def play(self):
+            self._playing = True
+
+        def is_playing(self):
+            if self._playing:
+                self._playing = False
+                return True
+            return False
+
+    fake_player = FakeMediaPlayer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vlc",
+        SimpleNamespace(
+            Instance=lambda: SimpleNamespace(media_player_new=lambda: fake_player)
+        ),
+    )
+
+    music_player(sample_dir, max_passes=1, csv_path=csv_path, volume=100)
+
+    assert fake_player.volume == 100
+    assert len(fake_player.calls) >= 2
+    assert fake_player.calls[0] < 100
+
+
+def test_music_player_waits_for_track_after_initial_startup_delay(
+    tmp_path, monkeypatch
+):
+    sample_dir = tmp_path / "music"
+    sample_dir.mkdir()
+    sample_files = [sample_dir / "track1.wav", sample_dir / "track2.wav"]
+
+    for sample in sample_files:
+        sample.write_text("sample mp3 content", encoding="utf-8")
+
+    csv_path = tmp_path / "music.csv"
+
+    class FakeMediaPlayer:
+        def __init__(self):
+            self.paths = []
+            self.polls = 0
+
+        def set_mrl(self, file_path):
+            self.paths.append(file_path)
+            self.polls = 0
+
+        def audio_set_volume(self, volume):
+            pass
+
+        def play(self):
+            pass
+
+        def is_playing(self):
+            self.polls += 1
+            return self.polls > 1 and self.polls < 4
+
+    fake_player = FakeMediaPlayer()
+    monkeypatch.setitem(
+        sys.modules,
+        "vlc",
+        SimpleNamespace(
+            Instance=lambda: SimpleNamespace(media_player_new=lambda: fake_player)
+        ),
+    )
+
+    music_player(sample_dir, max_passes=1, csv_path=csv_path, volume=100)
+
+    assert len(fake_player.paths) == len(sample_files)
 
 
 def test_play_randomized_music_from_folder_uses_randomized_playlist(
@@ -167,7 +282,7 @@ def test_play_randomized_music_from_folder_uses_randomized_playlist(
     play_randomized_music_from_folder(sample_dir, max_passes=1, csv_path=csv_path)
 
     assert len(fake_player.paths) == len(sample_files)
-    assert all(path.endswith(".wav") for path in fake_player.paths)
+    assert all(path.endswith(".mp3") for path in fake_player.paths)
 
 
 def test_admin_can_add_and_delete_song(tmp_path, monkeypatch):
@@ -187,21 +302,21 @@ def test_admin_can_add_and_delete_song(tmp_path, monkeypatch):
 
     admin(music_dir=sample_dir, csv_path=csv_path)
 
-    assert (sample_dir / "track_1.wav").exists()
+    assert (sample_dir / "source_track.mp3").exists()
 
     with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))
 
     assert len(rows) == 1
-    assert rows[0]["music"] == "track_1.wav"
-    assert rows[0]["location"] == str((sample_dir / "track_1.wav").resolve())
+    assert rows[0]["music"] == "source_track.mp3"
+    assert rows[0]["location"] == str((sample_dir / "source_track.mp3").resolve())
 
-    responses = iter(["2", "track_1.wav", "4"])
+    responses = iter(["2", "source_track.mp3", "4"])
     monkeypatch.setattr("builtins.input", fake_input)
 
     admin(music_dir=sample_dir, csv_path=csv_path)
 
-    assert not (sample_dir / "track_1.wav").exists()
+    assert not (sample_dir / "source_track.mp3").exists()
 
     with csv_path.open("r", encoding="utf-8", newline="") as csv_file:
         rows = list(csv.DictReader(csv_file))

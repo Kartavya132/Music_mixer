@@ -3,10 +3,17 @@ import math
 import random
 import shutil
 import struct
+import sys
 import time
 import wave
 from datetime import datetime
 from pathlib import Path
+
+
+def _project_root():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _format_size(size_bytes):
@@ -56,46 +63,21 @@ def _create_placeholder_wav(
 
 
 def _repair_placeholder_music_files(music_dir):
+    """Keep all music files intact.
+
+    Invalid placeholder files are left alone and simply ignored when building the
+    CSV. We never rename or delete a user's actual music track.
+    """
     if not music_dir.exists():
         return
-
-    for music_file in sorted(music_dir.glob("*.mp3")):
-        if not music_file.is_file():
-            continue
-
-        data = music_file.read_bytes()[:16]
-        if _looks_like_real_mp3(data):
-            continue
-
-        wav_path = music_dir / f"{music_file.stem}.wav"
-        _create_placeholder_wav(wav_path)
-        music_file.unlink()
+    return
 
 
 def _normalize_music_file_names(music_dir):
+    """Leave file names as-is to preserve the user's music library."""
     if not music_dir.exists():
         return
-
-    music_files = []
-    for pattern in ("*.mp3", "*.wav"):
-        music_files.extend(
-            music_file for music_file in music_dir.glob(pattern) if music_file.is_file()
-        )
-
-    music_files = sorted(music_files, key=lambda item: item.name.lower())
-
-    for index, music_file in enumerate(music_files, start=1):
-        extension = music_file.suffix.lower()
-        target_name = f"track_{index}{extension}"
-        target_path = music_dir / target_name
-
-        if music_file.name == target_name:
-            continue
-
-        if target_path.exists() and target_path.resolve() != music_file.resolve():
-            target_path.unlink()
-
-        music_file.rename(target_path)
+    return
 
 
 def _print_header(title):
@@ -120,12 +102,12 @@ def _print_library(rows):
 
 def add_music_to_library(source_file, music_dir=None, csv_path=None):
     if music_dir is None:
-        music_dir = (Path(__file__).resolve().parent.parent / "music").resolve()
+        music_dir = (_project_root() / "music").resolve()
     else:
         music_dir = Path(music_dir).resolve()
 
     if csv_path is None:
-        csv_path = (Path(__file__).resolve().parent / "music.csv").resolve()
+        csv_path = (_project_root() / "func" / "music.csv").resolve()
     else:
         csv_path = Path(csv_path).resolve()
 
@@ -151,12 +133,12 @@ def add_music_to_library(source_file, music_dir=None, csv_path=None):
 
 def sync_music_csv(music_dir=None, csv_path=None):
     if music_dir is None:
-        music_dir = (Path(__file__).resolve().parent.parent / "music").resolve()
+        music_dir = (_project_root() / "music").resolve()
     else:
         music_dir = Path(music_dir).resolve()
 
     if csv_path is None:
-        csv_path = (Path(__file__).resolve().parent / "music.csv").resolve()
+        csv_path = (_project_root() / "func" / "music.csv").resolve()
     else:
         csv_path = Path(csv_path).resolve()
 
@@ -165,14 +147,23 @@ def sync_music_csv(music_dir=None, csv_path=None):
 
     music_dir.mkdir(parents=True, exist_ok=True)
     _repair_placeholder_music_files(music_dir)
-    _normalize_music_file_names(music_dir)
 
     music_files = []
     for pattern in ("*.mp3", "*.wav"):
-        music_files.extend(
-            music_file for music_file in music_dir.glob(pattern) if music_file.is_file()
-        )
-    music_files = sorted(music_files, key=lambda item: item.name)
+        for music_file in music_dir.glob(pattern):
+            if not music_file.is_file():
+                continue
+
+            if music_file.suffix.lower() == ".mp3":
+                try:
+                    data = music_file.read_bytes()[:16]
+                except OSError:
+                    continue
+                if not _looks_like_real_mp3(data):
+                    continue
+
+            music_files.append(music_file)
+    music_files = sorted(music_files, key=lambda item: item.name.lower())
 
     rows = []
     for index, music_file in enumerate(music_files, start=1):
@@ -219,12 +210,12 @@ def sync_music_csv(music_dir=None, csv_path=None):
 
 def admin(music_dir=None, csv_path=None):
     if music_dir is None:
-        music_dir = (Path(__file__).resolve().parent.parent / "music").resolve()
+        music_dir = (_project_root() / "music").resolve()
     else:
         music_dir = Path(music_dir).resolve()
 
     if csv_path is None:
-        csv_path = (Path(__file__).resolve().parent / "music.csv").resolve()
+        csv_path = (_project_root() / "func" / "music.csv").resolve()
     else:
         csv_path = Path(csv_path).resolve()
 
@@ -305,26 +296,58 @@ def _wait_for_media_player_to_finish(media_player, vlc_module=None):
     if vlc_module is not None and hasattr(media_player, "get_state"):
         state_enum = getattr(vlc_module, "State", None)
         if state_enum is not None:
+            started = False
             while True:
                 try:
                     state = media_player.get_state()
                 except Exception:
                     break
 
-                if state in (
-                    getattr(state_enum, "Ended", None),
-                    getattr(state_enum, "Stopped", None),
-                    getattr(state_enum, "Error", None),
+                if state == getattr(state_enum, "Playing", None):
+                    started = True
+
+                if (
+                    state
+                    in (
+                        getattr(state_enum, "Ended", None),
+                        getattr(state_enum, "Stopped", None),
+                        getattr(state_enum, "Error", None),
+                    )
+                    and started
                 ):
                     return
 
                 time.sleep(0.05)
 
-    while media_player.is_playing():
+    # VLC can briefly report false while it is opening a newly selected file.
+    started = False
+    startup_deadline = time.monotonic() + 5
+    while not started and time.monotonic() < startup_deadline:
+        if media_player.is_playing():
+            started = True
+            break
+        time.sleep(0.05)
+
+    while started and media_player.is_playing():
         time.sleep(0.05)
 
 
-def _play_music_file_with_vlc(music_file, volume=100):
+def _ramp_volume_to_target(media_player, target_volume, step=10, delay=0.05):
+    if not hasattr(media_player, "audio_set_volume"):
+        return
+
+    target_volume = max(0, min(105, int(target_volume)))
+    current_volume = 0
+
+    while current_volume < target_volume:
+        current_volume = min(current_volume + step, target_volume)
+        media_player.audio_set_volume(current_volume)
+        time.sleep(delay)
+
+    media_player.audio_set_volume(target_volume)
+
+
+def _play_music_file_with_vlc(music_file, volume=105):
     try:
         import vlc
     except ImportError as exc:
@@ -342,10 +365,10 @@ def _play_music_file_with_vlc(music_file, volume=100):
         media_player.set_mrl(str(music_file))
 
     if hasattr(media_player, "audio_set_volume"):
-        media_player.audio_set_volume(volume)
+        media_player.audio_set_volume(0)
 
     media_player.play()
-
+    _ramp_volume_to_target(media_player, volume)
     _wait_for_media_player_to_finish(media_player, vlc_module=vlc)
 
 
@@ -353,12 +376,12 @@ def play_randomized_music_from_folder(
     music_dir=None, max_passes=None, csv_path=None, volume=100
 ):
     if music_dir is None:
-        music_dir = (Path(__file__).resolve().parent.parent / "music").resolve()
+        music_dir = (_project_root() / "music").resolve()
     else:
         music_dir = Path(music_dir).resolve()
 
     if csv_path is None:
-        csv_path = (Path(__file__).resolve().parent / "music.csv").resolve()
+        csv_path = (_project_root() / "func" / "music.csv").resolve()
     else:
         csv_path = Path(csv_path).resolve()
 

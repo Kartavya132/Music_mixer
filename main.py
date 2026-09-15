@@ -1,3 +1,5 @@
+import argparse
+
 import func.function as fnf
 
 
@@ -7,7 +9,11 @@ def _print_header(title):
     print("=" * 60)
 
 
-def main():
+def main(play_immediately=False):
+    if play_immediately:
+        fnf.music_player()
+        return
+
     _print_header("WELCOME TO MUSIC MIXER")
     print(
         "A simple music player with shuffle, looping, admin controls, and CSV tracking."
@@ -57,4 +63,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Play and manage your music library.")
+    parser.add_argument(
+        "--play",
+        action="store_true",
+        help="start playing music immediately",
+    )
+    args = parser.parse_args()
+    main(play_immediately=args.play)
