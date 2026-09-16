@@ -21,12 +21,16 @@ def main(play_immediately=False):
 
     while True:
         print("\nMain Menu")
-        print("1. Play music")
-        print("2. Open admin panel")
-        print("3. View music library")
-        print("4. Exit")
+        print("[1] Play music")
+        print("[2] Manage music library")
+        print("[3] View music library")
+        print("[4] Exit")
 
-        choice = input("\nChoose an option: ").strip()
+        try:
+            choice = input("\nChoose an option (1-4): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
 
         if choice == "1":
             try:
@@ -59,7 +63,7 @@ def main(play_immediately=False):
             print("\nThanks for using Music Mixer. Goodbye!")
             break
         else:
-            print("\nInvalid option. Please choose from 1 to 4.")
+            print("\nInvalid option. Enter 1, 2, 3, or 4.")
 
 
 if __name__ == "__main__":

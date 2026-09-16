@@ -9,6 +9,9 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
+MAX_VOLUME = 150
+_active_media_player = None
+
 
 def _project_root():
     if getattr(sys, "frozen", False):
@@ -41,6 +44,13 @@ def _looks_like_real_mp3(data):
         return False
 
     return data.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"))
+
+
+def _has_audio_data(music_file):
+    try:
+        return music_file.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _create_placeholder_wav(
@@ -96,6 +106,7 @@ def _print_library(rows):
         print(
             f"{row['index']}. {row['music']} | "
             f"Size: {row['size']} | "
+            f"Status: {row['status']} | "
             f"Location: {row['location']}"
         )
 
@@ -153,15 +164,6 @@ def sync_music_csv(music_dir=None, csv_path=None):
         for music_file in music_dir.glob(pattern):
             if not music_file.is_file():
                 continue
-
-            if music_file.suffix.lower() == ".mp3":
-                try:
-                    data = music_file.read_bytes()[:16]
-                except OSError:
-                    continue
-                if not _looks_like_real_mp3(data):
-                    continue
-
             music_files.append(music_file)
     music_files = sorted(music_files, key=lambda item: item.name.lower())
 
@@ -185,6 +187,7 @@ def sync_music_csv(music_dir=None, csv_path=None):
                 "size": size,
                 "created_date": created_date,
                 "language": "unknown",
+                "status": "Ready" if _has_audio_data(music_file) else "Empty file",
                 "location": str(music_file.resolve()),
             }
         )
@@ -198,6 +201,7 @@ def sync_music_csv(music_dir=None, csv_path=None):
         "size",
         "created_date",
         "language",
+        "status",
         "location",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
@@ -285,7 +289,9 @@ def _get_music_playlist(music_dir):
     playlist = []
     for pattern in ("*.mp3", "*.wav"):
         playlist.extend(
-            music_file for music_file in music_dir.glob(pattern) if music_file.is_file()
+            music_file
+            for music_file in music_dir.glob(pattern)
+            if music_file.is_file() and _has_audio_data(music_file)
         )
 
     unique_playlist = {path.resolve(): path for path in playlist}
@@ -336,7 +342,7 @@ def _ramp_volume_to_target(media_player, target_volume, step=10, delay=0.05):
     if not hasattr(media_player, "audio_set_volume"):
         return
 
-    target_volume = max(0, min(105, int(target_volume)))
+    target_volume = max(0, min(MAX_VOLUME, int(target_volume)))
     current_volume = 0
 
     while current_volume < target_volume:
@@ -347,7 +353,27 @@ def _ramp_volume_to_target(media_player, target_volume, step=10, delay=0.05):
     media_player.audio_set_volume(target_volume)
 
 
-def _play_music_file_with_vlc(music_file, volume=105):
+def _release_vlc_player(media_player, instance):
+    if media_player is not None:
+        try:
+            media_player.stop()
+        except Exception:
+            pass
+        try:
+            media_player.release()
+        except Exception:
+            pass
+
+    if instance is not None:
+        try:
+            instance.release()
+        except Exception:
+            pass
+
+
+def _play_music_file_with_vlc(music_file, volume=MAX_VOLUME):
+    global _active_media_player
+
     try:
         import vlc
     except ImportError as exc:
@@ -357,23 +383,39 @@ def _play_music_file_with_vlc(music_file, volume=105):
 
     instance = vlc.Instance()
     media_player = instance.media_player_new()
+    _active_media_player = media_player
 
-    if hasattr(instance, "media_new") and hasattr(media_player, "set_media"):
-        media = instance.media_new(str(music_file))
-        media_player.set_media(media)
-    else:
-        media_player.set_mrl(str(music_file))
+    try:
+        if hasattr(instance, "media_new") and hasattr(media_player, "set_media"):
+            media = instance.media_new(str(music_file))
+            media_player.set_media(media)
+        else:
+            media_player.set_mrl(str(music_file))
 
-    if hasattr(media_player, "audio_set_volume"):
-        media_player.audio_set_volume(0)
+        if hasattr(media_player, "audio_set_volume"):
+            media_player.audio_set_volume(0)
 
-    media_player.play()
-    _ramp_volume_to_target(media_player, volume)
-    _wait_for_media_player_to_finish(media_player, vlc_module=vlc)
+        media_player.play()
+        _ramp_volume_to_target(media_player, volume)
+        _wait_for_media_player_to_finish(media_player, vlc_module=vlc)
+    finally:
+        _release_vlc_player(media_player, instance)
+        _active_media_player = None
+
+
+def stop_music_player():
+    """Stop the currently playing track so the process can exit cleanly."""
+    global _active_media_player
+
+    if _active_media_player is not None:
+        try:
+            _active_media_player.stop()
+        except Exception:
+            pass
 
 
 def play_randomized_music_from_folder(
-    music_dir=None, max_passes=None, csv_path=None, volume=100
+    music_dir=None, max_passes=None, csv_path=None, volume=MAX_VOLUME
 ):
     if music_dir is None:
         music_dir = (_project_root() / "music").resolve()
@@ -391,8 +433,11 @@ def play_randomized_music_from_folder(
         raise FileNotFoundError(f"No playable music files found in: {music_dir}")
 
     _print_header("NOW PLAYING")
-    print(f"Loaded {len(rows)} tracks from {music_dir}")
-    print("The playlist will shuffle and loop automatically.")
+    playable_count = len(_get_music_playlist(music_dir))
+    print(f"Library: {len(rows)} tracks | Ready to play: {playable_count}")
+    print(f"Music folder: {music_dir}")
+    print(f"Playback volume: {MAX_VOLUME}/{MAX_VOLUME} (maximum)")
+    print("The playlist will shuffle and loop automatically. Press Ctrl+C to stop.")
 
     passes_played = 0
 
@@ -417,10 +462,11 @@ def play_randomized_music_from_folder(
             if max_passes is not None and passes_played >= max_passes:
                 break
     except KeyboardInterrupt:
+        stop_music_player()
         print("\nMusic player stopped by user.")
 
 
-def music_player(music_dir=None, max_passes=None, csv_path=None, volume=100):
+def music_player(music_dir=None, max_passes=None, csv_path=None, volume=MAX_VOLUME):
     play_randomized_music_from_folder(
         music_dir=music_dir,
         max_passes=max_passes,

@@ -285,6 +285,58 @@ def test_play_randomized_music_from_folder_uses_randomized_playlist(
     assert all(path.endswith(".mp3") for path in fake_player.paths)
 
 
+def test_music_player_releases_vlc_resources_after_track(tmp_path, monkeypatch):
+    sample_dir = tmp_path / "music"
+    sample_dir.mkdir()
+    (sample_dir / "track.mp3").write_text("sample mp3 content", encoding="utf-8")
+    csv_path = tmp_path / "music.csv"
+
+    class FakeMediaPlayer:
+        def __init__(self):
+            self.stopped = False
+            self.released = False
+            self._playing = True
+
+        def set_mrl(self, file_path):
+            pass
+
+        def audio_set_volume(self, volume):
+            pass
+
+        def play(self):
+            self._playing = True
+
+        def is_playing(self):
+            if self._playing:
+                self._playing = False
+                return True
+            return False
+
+        def stop(self):
+            self.stopped = True
+
+        def release(self):
+            self.released = True
+
+    fake_player = FakeMediaPlayer()
+    fake_instance = SimpleNamespace(
+        media_player_new=lambda: fake_player,
+        release=lambda: setattr(fake_instance, "released", True),
+        released=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vlc",
+        SimpleNamespace(Instance=lambda: fake_instance),
+    )
+
+    music_player(sample_dir, max_passes=1, csv_path=csv_path)
+
+    assert fake_player.stopped is True
+    assert fake_player.released is True
+    assert fake_instance.released is True
+
+
 def test_admin_can_add_and_delete_song(tmp_path, monkeypatch):
     sample_dir = tmp_path / "music"
     sample_dir.mkdir()
